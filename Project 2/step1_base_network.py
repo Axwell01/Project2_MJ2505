@@ -15,14 +15,18 @@ hours with the highest total demand). The chosen network is then run for all
 8760 hours to get the yearly heat losses, producer output and costs.
 See src/network_tools.py -> design_then_operate() for details.
 
-Run:  python step1_base_network.py
+Run:  python "Project 2/step1_base_network.py"
 Inputs written to:   inputs/step1/
 Results written to:  results/step1/
 """
 
 import os
+import sys
 
 import pandas as pd
+
+# src/ lives in the project root, one level above this script
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import network_tools as nt
 from src import parameters as par
