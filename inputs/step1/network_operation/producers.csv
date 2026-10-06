@@ -1,0 +1,3 @@
+id,lat,lon,x,y,name,heat.source.variable_costs,heat.source.nominal_capacity
+0,59.25,18.04859444815593,-80,0,Biomass boiler (wood chips),0.0264,400
+1,59.25134746676249,18.060190250869464,580,150,Natural gas boiler,0.0525,1000
