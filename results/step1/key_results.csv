@@ -3,13 +3,13 @@ design_solver_status,optimal
 operation_solver_status,optimal
 consumer_demand_kwh,2542169.0144737726
 peak_demand_coincident_kw,624.9753732847329
-network_losses_kwh,238096.79999999996
-losses_share_of_supply,0.08563814249720043
-heat_produced_kwh,2780265.8144737724
-check_produced_minus_demand_kwh,238096.7999999998
-pipe_investment_eur,456238.0
-pipe_annual_cost_eur,23089.903000000002
-operating_cost_eur,79570.22143661139
-total_annual_cost_eur,102660.1244366114
-trench_length_m,1460.0
-pipe_types_used,"DN-30, DN-50"
+network_losses_kwh,22070.296000000002
+losses_share_of_supply,0.008606956421677452
+heat_produced_kwh,2564239.30885332
+check_produced_minus_demand_kwh,22070.29437954724
+pipe_investment_eur,151880.0
+pipe_annual_cost_eur,7679.563999999999
+operating_cost_eur,69740.09689050629
+total_annual_cost_eur,77419.66089050629
+trench_length_m,280
+pipe_types_used,"DN-32, DN-50"

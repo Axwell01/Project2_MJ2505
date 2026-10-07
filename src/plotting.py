@@ -5,8 +5,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-PIPE_COLORS = {"DN-25": "#9ecae1", "DN-30": "#4292c6", "DN-40": "#41ab5d",
-               "DN-50": "#fd8d3c", "DN-60": "#d7301f"}
+PIPE_COLORS = {"DN-25": "#9ecae1", "DN-32": "#4292c6", "DN-40": "#41ab5d",
+               "DN-50": "#fd8d3c", "DN-63": "#d7301f"}
 
 
 def plot_network(producers, forks, consumers, candidates, built, names,

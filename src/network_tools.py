@@ -6,14 +6,71 @@ optimisation and summarising the results.
 
 import math
 import os
+import re
 import shutil
 
 import dhnx
+import oemof.solph as solph
 import pandas as pd
+import pyomo.environ as po
+from dhnx.optimization import optimization_models
 
 from src import parameters as par
 
 from src import compat  # noqa: F401  (fixes for DHNx / oemof versions)
+
+
+def _one_pipe_per_edge(om):
+    """
+    One pipe type per street / connection, usable in both directions.
+
+    DHNx creates a separate build/don't-build variable for every pipe type and
+    (for fork-fork pipes) every direction, but does not link them. Left alone
+    the optimiser may build e.g. DN-50 east-bound and DN-32 west-bound on the
+    same street (two pipes in one trench). This adds, for every street:
+      - at most one pipe type is built, and
+      - a street pipe is built in both directions or in neither. Each
+        direction has half the street length (see _halve_street_lengths), so
+        together they cost and lose exactly one pipe's worth, and the heat
+        can flow either way in different hours, as in a real pipe.
+    """
+    if not hasattr(om, "InvestmentFlowBlock") or \
+            not hasattr(om.InvestmentFlowBlock, "invest_status"):
+        return  # no build/don't-build decisions (e.g. the operation run)
+    streets = {}   # {street: {pipe type: {direction: status variable}}}
+    for i, o, p in om.InvestmentFlowBlock.invest_status:
+        if getattr(i.label, "tag1", None) == "infrastructure":
+            ends = tuple(re.findall(r"(?:producers|forks|consumers)-\d+",
+                                    i.label.tag4))
+            streets.setdefault(frozenset(ends), {}).setdefault(
+                i.label.tag3, {})[ends] = om.InvestmentFlowBlock.invest_status[i, o, p]
+    om.one_pipe_per_edge = po.ConstraintList()
+    for types in streets.values():
+        first = [next(iter(d.values())) for d in types.values()]
+        if len(first) > 1:
+            om.one_pipe_per_edge.add(sum(first) <= 1)
+        for d in types.values():
+            if len(d) == 2:
+                a, b = d.values()
+                om.one_pipe_per_edge.add(a == b)
+
+
+def _solve_with_one_pipe_per_edge(self):
+    """DHNx's OemofInvestOptimizationModel.solve(), plus _one_pipe_per_edge."""
+    self.om = solph.Model(self.es)
+    _one_pipe_per_edge(self.om)
+    self.om.solve(solver=self.settings["solver"],
+                  solve_kwargs=self.settings["solve_kw"] or {"tee": True},
+                  cmdline_options=self.settings.get("solver_cmdline_options", {}))
+    self.es.results["main"] = solph.processing.results(self.om)
+    self.es.results["meta"] = solph.processing.meta_results(self.om)
+
+
+optimization_models.OemofInvestOptimizationModel.solve = _solve_with_one_pipe_per_edge
+# DHNx warns when a street pipe is built in both directions; with
+# _one_pipe_per_edge that is intended, so hide only that message.
+optimization_models.logger.addFilter(
+    lambda record: "for both dircetions" not in record.getMessage())
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEMAND_CSV = os.path.join(ROOT, "data", "demand_profiles.csv")
@@ -41,8 +98,42 @@ def xy_to_latlon(x, y):
     return lat, lon
 
 
+def load_tutorial_layout(folder, consumer_spots):
+    """
+    Read a network layout from a DHNx tutorial twn_data folder.
+
+    consumer_spots: dict our consumer id -> tutorial consumer id. Only these
+                    consumers are connected; the rest are left out.
+    Returns producers, forks, consumers (dict id -> (x, y), x = lon, y = lat),
+    streets, connections (as for write_network) and lengths
+    (dict (from node, to node) -> m, the pipe lengths given in the tutorial).
+    """
+    def nodes(name):
+        df = pd.read_csv(os.path.join(folder, name + ".csv"), dtype={"id": str})
+        return {r.id: (r.lon, r.lat) for r in df.itertuples()}
+
+    producers, forks = nodes("producers"), nodes("forks")
+    tut_consumers = nodes("consumers")
+    consumers = {i: tut_consumers[t] for i, t in consumer_spots.items()}
+    ours = {"consumers-" + t: "consumers-" + i for i, t in consumer_spots.items()}
+
+    streets, connections, lengths = [], [], {}
+    for p in pd.read_csv(os.path.join(folder, "pipes.csv")).itertuples():
+        a, b = p.from_node, p.to_node
+        if a.startswith("consumers") or b.startswith("consumers"):
+            if a not in ours and b not in ours:
+                continue
+            a, b = ours.get(a, a), ours.get(b, b)
+        if a.startswith("forks") and b.startswith("forks"):
+            streets.append((a.split("-", 1)[1], b.split("-", 1)[1]))
+        else:
+            connections.append((a, b))
+        lengths[(a, b)] = p.length
+    return producers, forks, consumers, streets, connections, lengths
+
+
 def write_network(folder, producers, forks, consumers, streets, connections,
-                  demand):
+                  demand, lengths=None):
     """
     Write a DHNx ThermalNetwork as CSV files.
 
@@ -51,6 +142,8 @@ def write_network(folder, producers, forks, consumers, streets, connections,
     connections: list of (from, to) node names for producer and house
                  connections, e.g. ("producers-0", "forks-0")
     demand:      DataFrame, one column per consumer id, hourly kW
+    lengths:     optional dict (from node, to node) -> m. Pipes not in it get
+                 the straight-line distance between their nodes.
     """
     if os.path.exists(folder):
         shutil.rmtree(folder)
@@ -77,8 +170,9 @@ def write_network(folder, producers, forks, consumers, streets, connections,
     edges = [("forks-" + a, "forks-" + b) for a, b in streets] + connections
     for k, (a, b) in enumerate(edges):
         (x1, y1), (x2, y2) = xy(a), xy(b)
+        length = (lengths or {}).get((a, b), math.hypot(x2 - x1, y2 - y1))
         pipes.append({"id": k, "from_node": a, "to_node": b,
-                      "length": round(math.hypot(x2 - x1, y2 - y1), 1)})
+                      "length": round(length, 1)})
     pd.DataFrame(pipes).set_index("id").to_csv(os.path.join(folder, "pipes.csv"))
 
     seq = demand.copy()
@@ -182,7 +276,7 @@ def run_dhnx(network_folder, invest_folder, num_ts, hours_per_step=1.0,
 
 def design_then_operate(net_dir, inv_dir, producers, forks, consumers,
                         streets, connections, demand, pipe_names,
-                        producer_params):
+                        producer_params, lengths=None):
     """
     Two-stage approach (keeps the problem small enough to solve in seconds):
 
@@ -195,25 +289,46 @@ def design_then_operate(net_dir, inv_dir, producers, forks, consumers,
     """
     hours = design_hours(demand)
     write_network(net_dir, producers, forks, consumers, streets, connections,
-                  demand.iloc[hours])
+                  demand.iloc[hours], lengths)
+    _halve_street_lengths(net_dir)
     add_producer_attributes(net_dir, producer_params)
     pipe_table = write_invest_options(inv_dir, pipe_names, producer_params)
     print(f"Design hours used for pipe sizing: {[h + 1 for h in hours]}")
     print("Solving design problem (which pipes, which types)...")
     design = run_dhnx(net_dir, inv_dir, num_ts=len(hours),
                       hours_per_step=8760 / len(hours))
-    built = design.results.optimization["components"]["pipes"]
-    built = built[built["capacity"] > 0]
+    pipes = design.results.optimization["components"]["pipes"]
+    street = pipes["from_node"].str.startswith("forks") & \
+        pipes["to_node"].str.startswith("forks")
+    # back to the real street length, and the cost and loss of both halves
+    pipes.loc[street, ["length", "costs", "losses"]] *= 2
+    built = pipes[pipes["capacity"] > 0]
 
     op_net_dir = net_dir + "_operation"
     op_inv_dir = inv_dir + "_operation"
-    write_fixed_network(net_dir, op_net_dir, built, demand)
+    write_fixed_network(net_dir, op_net_dir, built, demand,
+                        pipe_table.set_index("label_3")["cap_max"])
     write_invest_options(op_inv_dir, pipe_names, producer_params)
     operation_pipe_table(pipe_table).to_csv(
         os.path.join(op_inv_dir, "network", "pipes.csv"), index=False)
     print("Solving operation problem (8760 hours, pipes fixed)...")
     operation = run_dhnx(op_net_dir, op_inv_dir, num_ts=len(demand))
     return design, operation, pipe_table, hours
+
+
+def _halve_street_lengths(net_dir):
+    """
+    Design run only: DHNx models a fork-fork street pipe as two one-way
+    pipes, each with the full length (cost and loss). Giving each half the
+    length makes the pair cost and lose exactly one street pipe; see
+    _one_pipe_per_edge. The real length is restored after the design run.
+    """
+    path = os.path.join(net_dir, "pipes.csv")
+    df = pd.read_csv(path, index_col="id")
+    street = df["from_node"].str.startswith("forks") & \
+        df["to_node"].str.startswith("forks")
+    df.loc[street, "length"] /= 2
+    df.to_csv(path)
 
 
 def operation_pipe_table(pipe_table):
@@ -232,15 +347,19 @@ def operation_pipe_table(pipe_table):
     return pd.concat([full, half], ignore_index=True)
 
 
-def write_fixed_network(src_dir, dst_dir, built, demand):
-    """Copy the network, keeping only the built pipes, as existing pipes."""
+def write_fixed_network(src_dir, dst_dir, built, demand, cap_max):
+    """
+    Copy the network, keeping only the built pipes, as existing pipes.
+    Each pipe may carry up to the maximum capacity of its type (cap_max:
+    pipe type -> kW), not just the flow it had in the design hours: in other
+    hours the heat can take a different route around the ring.
+    """
     if os.path.exists(dst_dir):
         shutil.rmtree(dst_dir)
     shutil.copytree(src_dir, dst_dir)
     rows = []
     for i, p in built.iterrows():
-        # small margin so the operation run is never limited by rounding
-        cap = p["capacity"] * 1.001 + 0.01
+        cap = cap_max[p["hp_type"]]
         base = {"length": p["length"], "capacity": cap, "existing": 1}
         if p["from_node"].startswith("forks") and p["to_node"].startswith("forks"):
             rows.append({"from_node": p["from_node"], "to_node": p["to_node"],

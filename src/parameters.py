@@ -50,28 +50,24 @@ CP_WATER = 4.19             # kJ/(kg K)
 #             low velocities to keep the pressure drop around 100-200 Pa/m;
 #             larger pipes allow higher velocities (Frederiksen & Werner,
 #             "District Heating and Cooling", 2013).
-#   loss_w_m  heat loss per metre of trench (supply + return pipe) [W/m] at
-#             85/45 degC and ~8 degC ground. Typical values for pre-insulated
-#             twin pipes, insulation series 2 (manufacturer catalogues,
-#             e.g. Logstor). The loss is constant whenever the pipe is built,
-#             because the water is hot all year round.
+#   invest    investment (construction) cost [EUR/m]. Course DHNx tutorial,
+#             discrete_DN_numbers/Case 1/invest_data/network/pipes.csv
+#             (column fix_costs). Annualised below with DISCOUNT_RATE and
+#             PIPE_LIFETIME, because the objective is a yearly cost.
+#   loss_w_m  heat loss per metre of trench [W/m]. Same tutorial file
+#             (column l_factor_fix, kW/m). The loss is constant whenever the
+#             pipe is built, because the water is hot all year round.
 #
 # Capacity follows from  P_max = rho * cp * v_max * A * delta_T.
-#
-# Construction cost follows Persson & Werner (2011), "Heat distribution and
-# the future competitiveness of district heating", Applied Energy 88,
-# 568-576:  C = C1 + C2 * d_a  [EUR/m], suburban area: C1 = 214 EUR/m,
-# C2 = 1725 EUR/m2, with d_a ~ outer steel pipe diameter = DN + 9 mm.
-CONSTRUCTION_C1 = 214.0     # EUR/m
-CONSTRUCTION_C2 = 1725.0    # EUR/m2
-
+# (The tutorial's own cap_max values are not used: they are not explained
+# and are too small for the course demand profiles, e.g. 179 kW for DN-50.)
 PIPE_TYPES = {
-    # name     DN   v_max  loss_w_m
-    "DN-25": (25, 0.80, 14.0),
-    "DN-30": (30, 1.00, 15.0),
-    "DN-40": (40, 1.15, 17.0),
-    "DN-50": (50, 1.30, 19.0),
-    "DN-60": (60, 1.50, 21.0),
+    # name     DN   v_max  invest  loss_w_m
+    "DN-25": (25, 0.80, 466.0, 7.656),
+    "DN-32": (32, 1.00, 491.0, 8.6405),
+    "DN-40": (40, 1.15, 522.0, 9.5755),
+    "DN-50": (50, 1.30, 563.0, 9.141),
+    "DN-63": (63, 1.50, 620.0, 11.4125),
 }
 
 
@@ -79,12 +75,6 @@ def pipe_capacity_kw(dn, v_max):
     """Maximum heat the pipe can carry [kW]."""
     area = math.pi * (dn / 1000) ** 2 / 4
     return RHO_WATER * CP_WATER * v_max * area * DELTA_T
-
-
-def pipe_cost_eur_per_m(dn):
-    """Construction (investment) cost of the pipe [EUR/m]."""
-    d_outer = (dn + 9) / 1000
-    return CONSTRUCTION_C1 + CONSTRUCTION_C2 * d_outer
 
 
 def pipe_table(names):
@@ -101,7 +91,7 @@ def pipe_table(names):
     crf = annuity_factor(DISCOUNT_RATE, PIPE_LIFETIME)
     rows = []
     for name in names:
-        dn, v_max, loss_w_m = PIPE_TYPES[name]
+        dn, v_max, invest, loss_w_m = PIPE_TYPES[name]
         rows.append({
             "label_3": name,
             "active": 1,
@@ -111,9 +101,9 @@ def pipe_table(names):
             "cap_max": round(pipe_capacity_kw(dn, v_max), 1),  # kW
             "cap_min": 0,                            # kW
             "capex_pipes": 1e-4,                     # EUR/(kW*m*a)
-            "fix_costs": round(pipe_cost_eur_per_m(dn) * crf, 3),  # EUR/(m*a)
+            "fix_costs": round(invest * crf, 3),     # EUR/(m*a)
             # extra columns for the report (ignored by DHNx)
-            "invest_eur_per_m": round(pipe_cost_eur_per_m(dn), 1),
+            "invest_eur_per_m": invest,
             "v_max_m_s": v_max,
         })
     return rows
